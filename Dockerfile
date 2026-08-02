@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Persistent volume. Survives restarts, redeploys, and sleep/wake.
-VOLUME ["/data"]
-
+# NOTE: do NOT declare `VOLUME ["/data"]`. Maritime mounts its own persistent
+# volume at /data; a VOLUME directive in the image made the micro-VM launch fail
+# with `fc-manager 500 for /vms` after an otherwise clean build (2026-08-02).
 CMD ["python", "start.py"]
