@@ -44,10 +44,14 @@ class Settings:
     elevenlabs_webhook_secret = os.getenv("ELEVENLABS_WEBHOOK_SECRET", "")
 
     # --- reasoning ---------------------------------------------------------
+    # Two interchangeable backends; see app/llm.py for the selection rule.
+    # Maritime injects OPENAI_API_KEY + OPENAI_BASE_URL (its bundled proxy) into
+    # every container, so hosted runs need no key of our own.
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    # Extraction and strategy are structured-output tasks on short transcripts;
-    # Sonnet is the right cost/latency point. Override for the report if desired.
-    model = os.getenv("OTTO_MODEL", "claude-sonnet-5")
+    anthropic_model = os.getenv("OTTO_MODEL", "claude-sonnet-5")
+    openai_api_key = os.getenv("OPENAI_API_KEY", "")
+    openai_base_url = os.getenv("OPENAI_BASE_URL", "").rstrip("/")
+    openai_model = os.getenv("OTTO_OPENAI_MODEL", "gpt-4.1-mini")
 
     # --- research ----------------------------------------------------------
     google_places_api_key = os.getenv("GOOGLE_PLACES_API_KEY", "")
@@ -72,6 +76,15 @@ class Settings:
     def voice_configured(self) -> bool:
         return bool(self.elevenlabs_api_key and self.elevenlabs_phone_number_id)
 
+    @property
+    def llm_backend(self) -> str:
+        forced = os.getenv("OTTO_LLM_BACKEND", "").strip().lower()
+        if forced:
+            return "openai" if forced == "maritime" else forced
+        if self.openai_base_url and self.openai_api_key:
+            return "openai"
+        return "anthropic" if self.anthropic_api_key else "none"
+
     def health(self) -> dict:
         """Config snapshot for GET /health — booleans only, never key material."""
         return {
@@ -80,6 +93,8 @@ class Settings:
             if self.data_dir.exists()
             else False,
             "voice_configured": self.voice_configured,
+            "llm_backend": self.llm_backend,
+            "maritime_proxy_available": bool(self.openai_base_url and self.openai_api_key),
             "anthropic_configured": bool(self.anthropic_api_key),
             "places_configured": bool(self.google_places_api_key),
             "base_url_set": bool(self.base_url),

@@ -1,0 +1,57 @@
+{
+  "type": "object",
+  "required": ["market_read", "shortlist", "per_dealer"],
+  "properties": {
+    "market_read": {
+      "type": "string",
+      "description": "Two or three sentences on what the quotes reveal: the spread, where the outliers are, what the fee patterns show."
+    },
+    "observed_low_otd_usd": {"type": ["number", "null"]},
+    "observed_high_otd_usd": {"type": ["number", "null"]},
+    "spread_multiple": {"type": ["number", "null"], "description": "high / low. The headline number for the report."},
+    "shortlist": {
+      "type": "array",
+      "description": "Dealer ids worth a negotiation call, best prospect first. Exclude anyone with a disqualifying red flag.",
+      "items": {"type": "string"}
+    },
+    "excluded": {
+      "type": "array",
+      "description": "Dealers deliberately not called back, with the reason.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "dealer_id": {"type": "string"},
+          "reason": {"type": "string"}
+        },
+        "required": ["dealer_id", "reason"]
+      }
+    },
+    "per_dealer": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["dealer_id", "target_otd_usd", "primary_lever"],
+        "properties": {
+          "dealer_id": {"type": "string"},
+          "current_otd_usd": {"type": ["number", "null"]},
+          "target_otd_usd": {
+            "type": "number",
+            "description": "What to aim for on this call. Roughly 10-12% below their quoted OTD, adjusted for days on lot and contested fees. INTERNAL ONLY — never spoken."
+          },
+          "opening_offer_usd": {"type": "number", "description": "The number the agent actually states first."},
+          "primary_lever": {
+            "type": "string",
+            "enum": ["days_on_lot", "competing_quote", "addon_removal", "fee_offset", "prior_reduction", "mileage_condition", "month_end", "outside_financing"],
+            "description": "The strongest evidenced lever against THIS dealer."
+          },
+          "contested_fees": {
+            "type": "array",
+            "description": "Specific line items to challenge, named as the dealer named them.",
+            "items": {"type": "string"}
+          },
+          "rationale": {"type": "string", "description": "Why this target and this lever, citing the evidence."}
+        }
+      }
+    }
+  }
+}

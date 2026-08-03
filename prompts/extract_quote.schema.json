@@ -1,0 +1,86 @@
+{
+  "type": "object",
+  "required": ["reached", "outcome", "otd_total_usd", "line_items", "red_flags", "evidence"],
+  "properties": {
+    "reached": {
+      "type": "boolean",
+      "description": "Was a human actually reached and engaged? False for voicemail, no answer, or an empty transcript."
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["quote_received", "otd_refused", "callback_promised", "no_answer", "declined", "stalled"],
+      "description": "Exactly one structured ending for the call."
+    },
+    "contact_name": {"type": ["string", "null"], "description": "Who was spoken to, if named."},
+    "vehicle_described": {"type": ["string", "null"], "description": "The vehicle as described on the call: year, make, model, trim."},
+    "stock_number": {"type": ["string", "null"]},
+    "vin": {"type": ["string", "null"]},
+    "vehicle_available": {"type": ["boolean", "null"], "description": "Confirmed physically on the lot and available."},
+    "mileage": {"type": ["integer", "null"]},
+    "title_status": {"type": ["string", "null"], "description": "clean, salvage, rebuilt, lemon buyback, branded, or null if not stated."},
+    "accident_history": {"type": ["string", "null"]},
+    "days_on_lot": {"type": ["integer", "null"], "description": "Only if stated. The strongest negotiation lever, so capture it exactly."},
+    "prior_price_reduction_usd": {"type": ["number", "null"], "description": "How much the price has already been cut since listing, if stated."},
+    "reconditioning": {"type": ["string", "null"]},
+    "ppi_permitted": {"type": ["boolean", "null"], "description": "Will they allow an independent pre-purchase inspection? Null if never discussed."},
+    "financing_contingent": {"type": ["boolean", "null"], "description": "Is the price contingent on dealer financing or a bundled product?"},
+
+    "otd_total_usd": {
+      "type": ["number", "null"],
+      "description": "The out-the-door total as stated. Null if only a vehicle price was given. NEVER computed from parts."
+    },
+    "otd_itemized_received": {"type": "boolean", "description": "Were the line items actually broken out?"},
+    "written_quote_promised": {"type": "boolean"},
+
+    "line_items": {
+      "type": "object",
+      "properties": {
+        "vehicle_price": {"type": ["number", "null"]},
+        "doc_fee": {"type": ["number", "null"]},
+        "doc_fee_over_ca_cap": {"type": ["boolean", "null"], "description": "True if a California doc fee above the $85 cap was quoted."},
+        "dealer_prep": {"type": ["number", "null"]},
+        "tax": {"type": ["number", "null"]},
+        "title_registration": {"type": ["number", "null"]},
+        "dealer_addons": {
+          "type": "array",
+          "description": "Every dealer-retained extra as stated, with its amount.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {"type": "string"},
+              "amount_usd": {"type": ["number", "null"]},
+              "preinstalled": {"type": ["boolean", "null"], "description": "Already on the car rather than optional."}
+            },
+            "required": ["name"]
+          }
+        }
+      }
+    },
+
+    "red_flags": {
+      "type": "array",
+      "description": "Only flags the transcript actually supports.",
+      "items": {
+        "type": "string",
+        "enum": ["branded_title", "ppi_refused", "otd_refused", "financing_contingent", "payment_framing", "deposit_demanded", "addons_preinstalled", "below_market_30"]
+      }
+    },
+
+    "evidence": {
+      "type": "array",
+      "description": "Short verbatim fragments from the transcript supporting the numbers above, so the report can cite what was said.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "claim": {"type": "string", "description": "Which field this supports, e.g. otd_total_usd."},
+          "quote": {"type": "string", "description": "Verbatim words from the transcript."}
+        },
+        "required": ["claim", "quote"]
+      }
+    },
+
+    "callback_at": {"type": ["string", "null"], "description": "If a callback was promised, when — as stated."},
+    "escalation_reason": {"type": ["string", "null"], "description": "Set only if this must go back to the human buyer."},
+    "notes": {"type": ["string", "null"], "description": "Anything material that has no field of its own."}
+  }
+}

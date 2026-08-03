@@ -1,18 +1,29 @@
-"""Claude client: structured extraction, prose generation, and token streaming.
+"""Model access with two interchangeable backends.
 
-Extraction runs against call transcripts, which are short and messy; the job is
-schema conformance, not eloquence. Tool-use forces valid JSON rather than hoping
-for it from a prose response.
+Otto's reasoning is all short, structured work over call transcripts — extraction,
+strategy, report prose. It does not need a specific vendor, so it takes whichever
+backend is available and prefers the free one:
+
+  1. **Maritime's bundled proxy** (default when hosted). Maritime injects
+     OPENAI_API_KEY + OPENAI_BASE_URL into every container, and per its own docs
+     "messages, tokens, and awake seconds never change the hosting bill". Running
+     here costs nothing beyond the flat agent price.
+  2. **Anthropic direct** (default locally, or force with OTTO_LLM_BACKEND=anthropic).
+
+Both paths force schema-valid JSON through tool calling rather than parsing prose,
+because a half-parsed extraction silently drops a fee line and that is exactly the
+failure this product exists to prevent.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from anthropic import Anthropic, AsyncAnthropic
+import httpx
 
 from .config import settings
 
@@ -25,10 +36,19 @@ class LLMError(RuntimeError):
     pass
 
 
-def _client() -> Anthropic:
-    if not settings.anthropic_api_key:
-        raise LLMError("ANTHROPIC_API_KEY is not set")
-    return Anthropic(api_key=settings.anthropic_api_key)
+def backend() -> str:
+    """Which backend is in play. Explicit override wins, then Maritime, then Anthropic."""
+    forced = os.getenv("OTTO_LLM_BACKEND", "").strip().lower()
+    if forced in ("openai", "maritime", "anthropic"):
+        return "openai" if forced == "maritime" else forced
+    if settings.openai_base_url and settings.openai_api_key:
+        return "openai"
+    if settings.anthropic_api_key:
+        return "anthropic"
+    raise LLMError(
+        "no model backend configured — set ANTHROPIC_API_KEY, or run on Maritime "
+        "where OPENAI_API_KEY/OPENAI_BASE_URL are injected"
+    )
 
 
 def load_prompt(name: str) -> str:
@@ -38,36 +58,88 @@ def load_prompt(name: str) -> str:
     return path.read_text()
 
 
-def extract(schema: dict, system: str, user: str, max_tokens: int = 2000) -> dict:
-    """Force a schema-valid object out of free text via a single-tool call.
+def load_schema(name: str) -> dict:
+    path = PROMPTS / f"{name}.schema.json"
+    if not path.exists():
+        raise LLMError(f"schema not found: {path}")
+    return json.loads(path.read_text())
 
-    Returns the tool input verbatim. Raises LLMError if the model declines to
-    call the tool, which is the honest failure mode — better than a half-parsed
-    dict that silently drops a fee line.
-    """
-    tool = {
-        "name": "record",
-        "description": "Record the extracted structured data.",
-        "input_schema": schema,
-    }
-    resp = _client().messages.create(
-        model=settings.model,
+
+# --- structured extraction --------------------------------------------------
+
+def extract(schema: dict, system: str, user: str, max_tokens: int = 2000) -> dict:
+    """Force a schema-valid object out of free text. Raises if the model declines."""
+    if backend() == "openai":
+        return _extract_openai(schema, system, user, max_tokens)
+    return _extract_anthropic(schema, system, user, max_tokens)
+
+
+def _extract_anthropic(schema: dict, system: str, user: str, max_tokens: int) -> dict:
+    from anthropic import Anthropic
+
+    resp = Anthropic(api_key=settings.anthropic_api_key).messages.create(
+        model=settings.anthropic_model,
         max_tokens=max_tokens,
         system=system,
-        tools=[tool],
+        tools=[{
+            "name": "record",
+            "description": "Record the extracted structured data.",
+            "input_schema": schema,
+        }],
         tool_choice={"type": "tool", "name": "record"},
         messages=[{"role": "user", "content": user}],
     )
     for block in resp.content:
         if block.type == "tool_use" and block.name == "record":
             return dict(block.input)
-    raise LLMError(f"model did not call the record tool (stop_reason={resp.stop_reason})")
+    raise LLMError(f"model did not call the record tool (stop={resp.stop_reason})")
 
+
+def _extract_openai(schema: dict, system: str, user: str, max_tokens: int) -> dict:
+    body = {
+        "model": settings.openai_model,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "record",
+                "description": "Record the extracted structured data.",
+                "parameters": schema,
+            },
+        }],
+        "tool_choice": {"type": "function", "function": {"name": "record"}},
+    }
+    data = _openai_post("/chat/completions", body)
+    try:
+        calls = data["choices"][0]["message"]["tool_calls"]
+        return json.loads(calls[0]["function"]["arguments"])
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as e:
+        raise LLMError(f"could not read a tool call from the response: {e}") from e
+
+
+# --- prose ------------------------------------------------------------------
 
 def generate(system: str, user: str, max_tokens: int = 4000) -> str:
-    """Plain prose — used for the final report."""
-    resp = _client().messages.create(
-        model=settings.model,
+    """Plain prose — the final report."""
+    if backend() == "openai":
+        data = _openai_post("/chat/completions", {
+            "model": settings.openai_model,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        })
+        return data["choices"][0]["message"]["content"] or ""
+
+    from anthropic import Anthropic
+
+    resp = Anthropic(api_key=settings.anthropic_api_key).messages.create(
+        model=settings.anthropic_model,
         max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user}],
@@ -75,15 +147,25 @@ def generate(system: str, user: str, max_tokens: int = 4000) -> str:
     return "".join(b.text for b in resp.content if b.type == "text")
 
 
-async def stream_text(messages: list[dict[str, Any]]) -> AsyncIterator[str]:
-    """Stream tokens for the OpenAI-compatible custom-LLM probe.
+# --- streaming (custom-LLM probe) -------------------------------------------
 
-    Takes OpenAI-shaped messages (that is what a voice vendor sends) and maps
-    them onto Anthropic's system/messages split.
+async def stream_text(messages: list[dict[str, Any]]) -> AsyncIterator[str]:
+    """Stream tokens for the OpenAI-compatible probe endpoint.
+
+    Takes OpenAI-shaped messages, because that is what a voice vendor sends.
     """
-    if not settings.anthropic_api_key:
-        yield "ANTHROPIC_API_KEY is not set"
+    try:
+        which = backend()
+    except LLMError as e:
+        yield str(e)
         return
+
+    if which == "openai":
+        async for piece in _stream_openai(messages):
+            yield piece
+        return
+
+    from anthropic import AsyncAnthropic
 
     system = "\n".join(m.get("content", "") for m in messages if m.get("role") == "system")
     convo = [
@@ -95,7 +177,7 @@ async def stream_text(messages: list[dict[str, Any]]) -> AsyncIterator[str]:
 
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
     async with client.messages.stream(
-        model=settings.model,
+        model=settings.anthropic_model,
         max_tokens=1024,
         system=system or "You are a concise voice assistant. Answer in one or two sentences.",
         messages=convo,
@@ -104,11 +186,47 @@ async def stream_text(messages: list[dict[str, Any]]) -> AsyncIterator[str]:
             yield text
 
 
-def json_schema_from(path_or_dict: str | dict) -> dict:
-    """Schemas live next to their prompts as prompts/<name>.schema.json."""
-    if isinstance(path_or_dict, dict):
-        return path_or_dict
-    p = PROMPTS / f"{path_or_dict}.schema.json"
-    if not p.exists():
-        raise LLMError(f"schema not found: {p}")
-    return json.loads(p.read_text())
+async def _stream_openai(messages: list[dict[str, Any]]) -> AsyncIterator[str]:
+    body = {
+        "model": settings.openai_model,
+        "messages": messages,
+        "max_tokens": 1024,
+        "stream": True,
+    }
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        async with client.stream(
+            "POST",
+            f"{settings.openai_base_url}/chat/completions",
+            headers=_openai_headers(),
+            json=body,
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                payload = line[6:].strip()
+                if payload == "[DONE]":
+                    return
+                try:
+                    delta = json.loads(payload)["choices"][0].get("delta", {})
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    continue
+                if content := delta.get("content"):
+                    yield content
+
+
+# --- transport --------------------------------------------------------------
+
+def _openai_headers() -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {settings.openai_api_key}",
+        "Content-Type": "application/json",
+    }
+
+
+def _openai_post(path: str, body: dict, timeout: float = 90.0) -> dict:
+    url = f"{settings.openai_base_url}{path}"
+    resp = httpx.post(url, headers=_openai_headers(), json=body, timeout=timeout)
+    if resp.status_code >= 300:
+        raise LLMError(f"{path} failed [{resp.status_code}]: {resp.text[:400]}")
+    return resp.json()

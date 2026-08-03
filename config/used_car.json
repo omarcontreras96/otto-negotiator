@@ -1,0 +1,125 @@
+{
+  "vertical": "used_car",
+  "display_name": "Used cars",
+  "market": "San Francisco Bay Area",
+  "currency": "USD",
+
+  "_comment": "Vertical is configuration, not code. Swapping this file retargets Otto at another phone-priced market without touching agent logic.",
+
+  "price_unit": {
+    "name": "out-the-door total",
+    "abbrev": "OTD",
+    "definition": "Everything the buyer pays to drive away: vehicle price + all dealer fees + tax + title + registration. The single number every conversation must resolve to.",
+    "why": "Listing price is not comparable across dealers because fee structures differ. OTD is the only figure that makes two quotes the same kind of thing."
+  },
+
+  "fee_triage": {
+    "pay_without_argument": {
+      "reason": "Government charges, identical at every dealer in the state. Arguing here spends credibility that is needed elsewhere.",
+      "items": ["sales tax", "title", "registration", "license fee", "state fees"]
+    },
+    "negotiate": {
+      "reason": "Dealer-retained charges that are conventional but not fixed. Either removed directly or offset against the vehicle price.",
+      "items": [
+        {"name": "documentation fee", "note": "California caps this at $85. A California dealer quoting more than $85 is misstating the cap.", "typical_usd": [85, 85]},
+        {"name": "dealer prep / reconditioning", "note": "Work done before the buyer existed; it belongs in the retail asking price. Charging it separately on top of full retail is double-dipping.", "typical_usd": [199, 599]},
+        {"name": "electronic filing fee", "typical_usd": [29, 85]},
+        {"name": "delivery fee", "typical_usd": [100, 500]},
+        {"name": "administrative fee", "typical_usd": [100, 500]}
+      ]
+    },
+    "refuse_outright": {
+      "reason": "Dealer-installed profit items the buyer never requested. Add-on bundles have averaged roughly $2,000 per vehicle in recent transaction data, so this line is often the entire negotiation.",
+      "items": [
+        {"name": "VIN etching", "typical_usd": [200, 400], "note": "DIY kit is $20-30; anti-theft benefit is minimal"},
+        {"name": "paint sealant / fabric / leather protection", "typical_usd": [149, 800], "note": "aftermarket equivalent is $8-100"},
+        {"name": "nitrogen-filled tires", "typical_usd": [50, 200]},
+        {"name": "key replacement program", "typical_usd": [299, 599]},
+        {"name": "GPS / LoJack tracking subscription", "typical_usd": [199, 999]},
+        {"name": "market adjustment / ADM", "note": "indefensible on a used vehicle"}
+      ]
+    }
+  },
+
+  "red_flags": [
+    {"id": "below_market_30", "rule": "quoted OTD is 30% or more below comparable market", "severity": "high",
+     "why": "A quote far below the market is a warning, not a win. It usually means undisclosed damage, a branded title, or fees that appear later."},
+    {"id": "branded_title", "rule": "title is salvage, rebuilt, lemon buyback, or otherwise branded", "severity": "high", "escalate": true},
+    {"id": "ppi_refused", "rule": "dealer will not allow an independent pre-purchase inspection", "severity": "high", "escalate": true,
+     "why": "Disqualifying, full stop. There is no good reason to refuse an inspection on a sound car."},
+    {"id": "otd_refused", "rule": "dealer will not give an out-the-door number by phone", "severity": "medium",
+     "why": "A store that will not quote OTD is planning to add something later."},
+    {"id": "financing_contingent", "rule": "price is contingent on dealer financing or a bundled product", "severity": "medium",
+     "why": "Signals rate markup ahead; the advertised price is not the real price."},
+    {"id": "payment_framing", "rule": "dealer steers to monthly payment instead of total", "severity": "low",
+     "why": "The four-square is coming. Payment framing hides the total."},
+    {"id": "deposit_demanded", "rule": "deposit required to hold the vehicle or honour a price", "severity": "high", "escalate": true}
+  ],
+
+  "negotiation_levers": [
+    {"id": "days_on_lot", "strength": "highest",
+     "use": "A car sitting 60+ days is under real cost pressure — dealers borrow to buy inventory and pay interest daily. Car-specific rather than dealer-specific, so it works even at a no-haggle store."},
+    {"id": "competing_quote", "strength": "high",
+     "use": "A real, itemised OTD from another dealer on a comparable vehicle. Only ever a quote actually captured on a call.",
+     "constraint": "Never invented, never estimated, never averaged. If no competitor gave a comparable number, this lever does not exist."},
+    {"id": "addon_removal", "strength": "high",
+     "use": "Refuse dealer-installed extras outright, or demand the equivalent off the vehicle price."},
+    {"id": "fee_offset", "strength": "medium",
+     "use": "When a fee is claimed to be mandatory: 'Then take the equivalent off the vehicle price and we are at the same place.'"},
+    {"id": "prior_reduction", "strength": "medium",
+     "use": "If they already cut the price once, the floor is lower than the current ask."},
+    {"id": "mileage_condition", "strength": "medium",
+     "use": "Mileage above average for the year, or reconditioning items disclosed on the call."},
+    {"id": "month_end", "strength": "low",
+     "use": "Volume targets are live in the last three business days of a month or quarter."},
+    {"id": "outside_financing", "strength": "low",
+     "use": "Pre-approval removes rate markup, but cash is weaker leverage than buyers assume — dealers earn on financing. Mention payment method last, never first."}
+  ],
+
+  "concession_ladder": {
+    "opening_offer_pct_below_their_otd": 11,
+    "_note": "10-12% below their quoted OTD is aggressive but inside the normal band for used inventory.",
+    "steps_usd": [600, 300, 150],
+    "rules": [
+      "Move in shrinking increments.",
+      "Never make two consecutive concessions without a counter from them.",
+      "Trade concessions, never gift them: every move up buys the removal of a fee or an add-on.",
+      "Go silent after stating an offer. Do not fill the pause, do not add a softener."
+    ]
+  },
+
+  "escalate_to_human": [
+    "dealer requests any personal identifier, credit authorisation, or payment",
+    "deposit required to hold the vehicle or honour a price",
+    "title is branded, salvage, rebuilt, or a lemon buyback",
+    "dealer refuses an independent pre-purchase inspection",
+    "undisclosed structural or frame damage appears",
+    "quote is contingent on financing terms, a warranty, or a bundled product",
+    "dealer becomes hostile or objects to negotiating with an AI",
+    "anything is asked that is not in the buyer spec",
+    "the written quote does not match what was agreed verbally"
+  ],
+
+  "call_outcomes": [
+    "quote_received",
+    "otd_refused",
+    "callback_promised",
+    "no_answer",
+    "declined",
+    "stalled",
+    "target_met",
+    "escalated"
+  ],
+
+  "benchmarks": {
+    "sources": ["Kelley Blue Book", "Edmunds", "comparable listings within 50 miles"],
+    "note": "Comparable live listings matter more than the estimate. Establish the spread before any call."
+  },
+
+  "jurisdiction": {
+    "state": "CA",
+    "doc_fee_cap_usd": 85,
+    "all_party_consent_recording": true,
+    "notes": "California is an all-party consent state: if the call is recorded, the agent must ask and receive a yes. California's bot-disclosure law requires disclosure where an automated system is used to influence a commercial transaction."
+  }
+}

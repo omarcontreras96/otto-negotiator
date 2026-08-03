@@ -1,0 +1,61 @@
+{
+  "type": "object",
+  "required": ["vehicle", "constraints", "confirmed_by_user"],
+  "properties": {
+    "buyer_name": {"type": ["string", "null"], "description": "First name only."},
+    "vehicle": {
+      "type": "object",
+      "properties": {
+        "make": {"type": ["string", "null"]},
+        "model": {"type": ["string", "null"]},
+        "alternatives": {
+          "type": "array",
+          "description": "Other models they are cross-shopping, if any.",
+          "items": {"type": "string"}
+        },
+        "year_min": {"type": ["integer", "null"]},
+        "year_max": {"type": ["integer", "null"]},
+        "trim": {"type": ["string", "null"]},
+        "max_mileage": {"type": ["integer", "null"]},
+        "transmission": {"type": ["string", "null"]},
+        "drivetrain": {"type": ["string", "null"]},
+        "color_preference": {"type": ["string", "null"]}
+      }
+    },
+    "must_haves": {
+      "type": "array",
+      "description": "Genuinely non-negotiable requirements. A hard filter: never traded away in negotiation.",
+      "items": {"type": "string"}
+    },
+    "nice_to_haves": {
+      "type": "array",
+      "description": "Wanted but tradeable. These are the only features that may be conceded for savings.",
+      "items": {"type": "string"}
+    },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "market": {"type": ["string", "null"], "description": "e.g. San Francisco Bay Area"},
+        "max_travel_miles": {"type": ["integer", "null"]},
+        "timeline": {"type": ["string", "null"], "description": "As the buyer put it: 'this week', 'within a month', 'just looking'."},
+        "payment_method": {"type": ["string", "null"], "enum": ["cash", "financing", "preapproved", null]},
+        "preapproved": {"type": ["boolean", "null"]},
+        "has_trade_in": {"type": ["boolean", "null"]},
+        "trade_in_written_offer_usd": {"type": ["number", "null"], "description": "An independent written offer, e.g. CarMax or Carvana. This is the floor for the trade."}
+      }
+    },
+    "market_reference_usd": {
+      "type": ["number", "null"],
+      "description": "What the buyer says comparable cars are LISTED at. A market observation, not their budget."
+    },
+    "buyer_stated_maximum_usd": {
+      "type": ["number", "null"],
+      "description": "PRIVATE. Only if volunteered. NEVER passed to a dealer-facing agent, never used as a target, never spoken aloud. Present so downstream code can guard it explicitly rather than have it leak through a general notes field."
+    },
+    "confirmed_by_user": {
+      "type": "boolean",
+      "description": "Did the buyer confirm a read-back summary on the call? An unconfirmed spec must not be used for calls."
+    },
+    "notes": {"type": ["string", "null"], "description": "Material context. MUST NOT contain the buyer's maximum or any figure they want kept private."}
+  }
+}

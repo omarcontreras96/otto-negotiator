@@ -9,13 +9,16 @@ Everything else is the product surface plus /probe/* (the platform instrument).
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
 import os
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
-from . import storage
+from . import elevenlabs, storage
 from .config import settings
 from .probes import BOOT_ID, router as probe_router
 
@@ -154,3 +157,110 @@ async def get_report(case_id: str) -> str:
     if md is None:
         raise HTTPException(404, "no report yet")
     return md
+
+
+@app.post("/cases")
+async def create_case(request: Request) -> dict:
+    body = await request.json() if await request.body() else {}
+    case_id = storage.new_case(user_phone=body.get("user_phone", ""), source="api")
+    if spec := body.get("buyer_spec"):
+        storage.save_json(case_id, "buyer_spec.json", spec)
+        storage.set_status(case_id, "intake_done")
+    return {"case_id": case_id, "status": (storage.read_case(case_id) or {}).get("status")}
+
+
+@app.post("/cases/{case_id}/advance")
+async def advance_case(case_id: str) -> dict:
+    from . import pipeline
+
+    if not storage.read_case(case_id):
+        raise HTTPException(404, "no such case")
+    return pipeline.advance(case_id)
+
+
+# --- voice webhook ----------------------------------------------------------
+
+@app.post("/webhooks/elevenlabs")
+async def elevenlabs_webhook(request: Request, background: BackgroundTasks) -> dict:
+    """Post-call webhook — one entrypoint for every agent type.
+
+    Returns 200 immediately and does the work in the background: extraction plus
+    placing the next call takes far longer than any sane webhook timeout, and a
+    slow 200 just earns a retry and a duplicate.
+    """
+    raw = await request.body()
+    if not _webhook_signature_ok(request, raw):
+        raise HTTPException(401, "bad signature")
+
+    payload = json.loads(raw)
+    meta = elevenlabs.webhook_meta(payload)
+    transcript = elevenlabs.transcript_text(payload)
+
+    # Dynamic variables are the primary routing key; the conversation index is the
+    # fallback for when a call was placed before the variables were attached.
+    case_id, agent_type, dealer_id = meta["case_id"], meta["agent_type"], meta["dealer_id"]
+    if not case_id and meta["conversation_id"]:
+        if idx := storage.lookup_conversation(meta["conversation_id"]):
+            case_id = idx["case_id"]
+            agent_type = agent_type or idx["agent"]
+            dealer_id = dealer_id or idx.get("dealer_id", "")
+
+    log.info("webhook conv=%s case=%s agent=%s dealer=%s chars=%d",
+             meta["conversation_id"], case_id, agent_type, dealer_id, len(transcript))
+
+    if not case_id:
+        # An inbound intake call has no case yet — open one now.
+        if agent_type == "intake" or not agent_type:
+            case_id = storage.new_case(user_phone=meta["caller_number"], source="phone")
+            agent_type = "intake"
+        else:
+            return {"ok": False, "reason": "unroutable: no case_id"}
+
+    background.add_task(_handle_call, case_id, agent_type, dealer_id,
+                        meta["conversation_id"], transcript)
+    return {"ok": True, "case_id": case_id}
+
+
+def _handle_call(case_id: str, agent_type: str, dealer_id: str,
+                 conversation_id: str, transcript: str) -> None:
+    from . import extraction, pipeline
+
+    try:
+        if agent_type == "intake":
+            storage.save_text(case_id, f"transcripts/intake_{conversation_id}.txt", transcript)
+            spec = extraction.extract_buyer_spec(transcript)
+            storage.save_json(case_id, "buyer_spec.json", spec)
+            storage.set_status(case_id, "intake_done")
+            if settings.auto_advance and spec.get("confirmed_by_user"):
+                pipeline.advance(case_id)
+            elif not spec.get("confirmed_by_user"):
+                log.warning("case=%s spec not confirmed on the call — holding before dialling",
+                            case_id)
+        elif agent_type == "quote":
+            pipeline.handle_quote_result(case_id, dealer_id, conversation_id, transcript)
+        elif agent_type == "nego":
+            pipeline.handle_nego_result(case_id, dealer_id, conversation_id, transcript)
+        else:
+            log.warning("unknown agent_type=%r case=%s", agent_type, case_id)
+    except Exception:
+        log.exception("webhook handling failed case=%s agent=%s", case_id, agent_type)
+
+
+def _webhook_signature_ok(request: Request, raw: bytes) -> bool:
+    """HMAC-verify when a secret is configured; skip when it is not.
+
+    ElevenLabs signs as `t=<unix>,v0=<hex hmac of "t.body">`.
+    """
+    if not settings.elevenlabs_webhook_secret:
+        return True
+    header = request.headers.get("elevenlabs-signature", "")
+    parts = dict(p.split("=", 1) for p in header.split(",") if "=" in p)
+    ts, sig = parts.get("t", ""), parts.get("v0", "")
+    if not ts or not sig:
+        return False
+    expected = hmac.new(
+        settings.elevenlabs_webhook_secret.encode(),
+        f"{ts}.{raw.decode()}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected, sig)

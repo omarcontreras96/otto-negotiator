@@ -1,0 +1,62 @@
+{
+  "type": "object",
+  "required": ["reached", "outcome", "price_moved", "final_otd_usd", "evidence"],
+  "properties": {
+    "reached": {"type": "boolean"},
+    "outcome": {
+      "type": "string",
+      "enum": ["target_met", "improved", "held_firm", "callback_promised", "declined", "no_answer", "stalled", "escalated"],
+      "description": "target_met = at or below target; improved = moved but not enough; held_firm = engaged but no movement."
+    },
+    "final_otd_usd": {
+      "type": ["number", "null"],
+      "description": "The out-the-door total at the end of THIS call. Null if no number was restated. Never inferred."
+    },
+    "price_moved": {
+      "type": "boolean",
+      "description": "Did the price or terms measurably change during this call? The core claim of the product, so it must be evidenced below."
+    },
+    "movement_usd": {
+      "type": ["number", "null"],
+      "description": "Reduction from their opening number on this call. Null if nothing moved."
+    },
+    "what_moved_them": {
+      "type": ["string", "null"],
+      "description": "Which lever actually produced the movement: days on lot, a competing quote, a fee challenge, an add-on removal."
+    },
+    "concessions_won": {
+      "type": "array",
+      "description": "Non-price wins: fees removed, add-ons dropped, terms added.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "item": {"type": "string"},
+          "value_usd": {"type": ["number", "null"]}
+        },
+        "required": ["item"]
+      }
+    },
+    "fees_removed": {"type": "array", "items": {"type": "string"}},
+    "written_confirmation_promised": {"type": "boolean"},
+    "quote_valid_through": {"type": ["string", "null"]},
+    "ppi_accepted_as_contingency": {"type": ["boolean", "null"]},
+    "agent_fabricated_leverage": {
+      "type": "boolean",
+      "description": "AUDIT FIELD. True if the agent cited a competing offer, deadline, or fact that it was not given. Judged strictly against the transcript — this is the honesty check, not a performance metric."
+    },
+    "evidence": {
+      "type": "array",
+      "description": "Verbatim fragments proving the movement and the final number.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "claim": {"type": "string"},
+          "quote": {"type": "string"}
+        },
+        "required": ["claim", "quote"]
+      }
+    },
+    "escalation_reason": {"type": ["string", "null"]},
+    "notes": {"type": ["string", "null"]}
+  }
+}
