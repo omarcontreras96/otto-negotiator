@@ -71,9 +71,10 @@ It never retried the build from the repo. Recovering required the explicit form:
 **Impact:** medium. The natural retry after any first-deploy failure is a dead end, and the error
 points at a registry problem rather than at the original build failure.
 
-### F-3 · Micro-VM launch is failing platform-wide: `fc-manager 500 for /vms` 🔴 **BLOCKING**
+### F-3 · Micro-VM launch failed platform-wide for ~5 hours: `fc-manager 500 for /vms` 🔴 **RESOLVED**
 
-Observed 2026-08-02, ~14:47–14:58 PDT. The Docker build succeeds **completely** — image built,
+Observed 2026-08-02, ~14:47 PDT until ~19:50 PDT — roughly five hours during which no agent
+could start. Recovered without action on our side; the same deploy command then succeeded. The Docker build succeeds **completely** — image built,
 pushed to `ghcr.io/maritime-sh/maritime-agent-builds`, runtime image confirmed ready — and then the
 micro-VM will not start:
 
@@ -156,20 +157,82 @@ a strength worth marketing.
 
 ---
 
-## 3. Latency measurements
+## 3. Latency measurements — COLLECTED
 
-**Not yet collected — blocked by F-3.** No micro-VM has started, so there is nothing to measure.
+`fc-manager` recovered ~19:50 PDT. Otto deployed clean and every probe ran. Measured from a
+laptop in San Francisco; the build worker reports `us-east-1`, so the agent is very likely
+East Coast. All figures are end-to-end from the client, which is what a voice vendor's
+webhook or tool call actually experiences.
 
-The instrument is written and deployed-ready (`app/probes.py`), and will produce:
+### 3.1 Warm request latency
 
-| Probe | Measures | Decides |
+| | ms |
+|---|---:|
+| min | 279 |
+| **p50** | **291** |
+| p90 | 381 |
+| max | 395 |
+| **`api.maritime.sh/health` (control plane, same machine)** | **93** |
+
+**Maritime's tunnel adds ~200 ms over the network floor** to every request. That is the
+number to internalise: it is not geography, because the control-plane baseline travels the
+same path.
+
+### 3.2 Sleep and wake — the decisive result
+
+Three separate behaviours, and the middle one is the problem:
+
+| Behaviour | Result |
+|---|---|
+| `GET` the public URL while asleep | **HTTP 503 `"Agent is starting or asleep. Try again in a moment."`** — polled every 500 ms for **240 s** and it never woke. HTTP traffic to the public URL does **not** wake an agent. |
+| `POST /api/webhooks/{agent_id}` while asleep | **HTTP 200 in 1.47 s**, wakes it |
+| public URL after that webhook | serving **0.38 s** later |
+
+**Total cold wake ≈ 1.85 s**, and only via the webhook endpoint.
+
+### 3.3 Snapshot/resume — confirmed, and better than documented
+
+| | before sleep | after wake |
 |---|---|---|
-| `GET /probe/echo` | arbitrary routes reachable on the public URL? | can a voice vendor's webhook point at Maritime directly (D1) |
-| `WS /probe/ws` | websocket termination + per-frame RTT | is media streaming possible at all (D4) |
-| `GET /probe/uptime` | `boot_id` stability + wall-vs-monotonic drift across sleep | is it really snapshot/resume, and how long did it sleep (D2) |
-| `GET /probe/ping` | warm RTT, and first-request-after-sleep RTT | **the number**: can Maritime sit on a call's critical path (D2) |
-| `POST /probe/v1/chat/completions` | time-to-first-token, `?echo=1` isolating platform from model | viability of the deep integration (D3) |
-| `POST /probe/capture` | what `POST /api/webhooks/{id}` actually delivers to a container | webhook shim needed or not (D1) |
+| `boot_id` | `1638ed398b574be8` | `1638ed398b574be8` ✅ same |
+| process | — | same pid |
+| monotonic uptime | — | 613.197 s |
+| wall uptime | — | 613.197 s |
+| **apparent sleep** | — | **0.0 s** |
+
+The process is genuinely resumed, not restarted — in-process state survives. And wall-clock
+*and* monotonic clocks are both frozen during sleep (drift is exactly zero), so the VM is
+truly paused rather than descheduled. That is stronger than the docs' hedge about "not
+trusting cached wall-clock time," and it is a real engineering achievement worth marketing.
+
+`/data` persisted across the cycle: the record written before sleep read back intact.
+
+### 3.4 Arbitrary routes and websockets
+
+**Arbitrary routes work.** Every path served on the public URL, GET and POST:
+`/probe/echo`, `/probe/uptime`, `/cases`, `/`, `POST /probe/echo`, `POST /chat` — all 200.
+A voice vendor's webhook can point straight at a Maritime agent. No shim needed.
+
+Public URL format: `https://api.maritime.sh/a/{agent-uuid}`.
+
+### 3.5 Bundled LLM proxy
+
+Works, and it is a genuine cost story. `maritime_proxy_available: true` in-container, with
+`OPENAI_API_KEY` + `OPENAI_BASE_URL` injected. A real streamed completion through it
+returned in **1.43 s**. Otto's entire reasoning path — extraction, strategy, report — runs
+on it with no key of our own and no metered LLM bill.
+
+Transport-only SSE (`?echo=1`, no model call) delivered its first byte in **0.39 s**. That
+is the floor for a custom-LLM integration: ~390 ms before the model has done any work.
+
+### 3.6 Verdict per integration depth
+
+| Depth | Budget | Measured | Verdict |
+|---|---|---|---|
+| **D1 Orchestrator** | seconds | 291 ms warm · 1.85 s cold via webhook | ✅ **Yes.** Arbitrary routes work, webhooks wake reliably, `/data` persists. This is a clean fit. |
+| **D2 Mid-call tool** | <500 ms invisible, ~1 s tolerable | 291 ms warm (p90 381) · **1.85 s if asleep** | ⚠️ **Only with sleep disabled.** Warm is tolerable; a cold start is 1.85 s of silence mid-sentence. Requires `--idle 0`. |
+| **D3 Custom LLM** | <500 ms to first token | **390 ms transport alone**, before the model | ❌ **No.** The tunnel overhead consumes the entire first-token budget. |
+| **D4 Media** | ~20 ms/frame | not attempted | ❌ Not Maritime's job, and shouldn't be. |
 
 ---
 
@@ -218,9 +281,55 @@ caring what their agent runs on.
 
 ---
 
-## 4. Provisional read for GTM
+## 4. Read for GTM
 
-Held loosely until §3 has numbers.
+### The one-line answer
+
+**Yes — voice-agent startups can host on Maritime, for the agent's brain and state, with
+sleep disabled.** Not for the model endpoint, and not for the audio.
+
+### The three things to change
+
+**1. Stop selling sleep to this segment. Sell resume.**
+The pricing page leads with sleep-when-idle. For a voice startup that is a *liability*: a
+sleeping agent returns **503**, and HTTP traffic to the public URL never wakes it — I polled
+for four minutes. A voice vendor posting a call result to a sleeping agent loses the result.
+
+But the underlying tech is genuinely impressive and under-sold: the process is **snapshotted
+and resumed with zero clock drift** and in-process state intact. Lead with *that* — "your
+agent keeps its memory across restarts" — and position always-on as the default tier for
+latency-sensitive workloads rather than an upsell. Charging $20 to turn off the headline
+feature is the wrong shape for this ICP.
+
+**2. The ~200 ms tunnel tax is the ceiling on how deep the integration can go.**
+291 ms warm against a 93 ms network floor means Maritime cannot be the model endpoint — 390 ms
+of transport lands before the first token. If owning that deeper layer matters commercially,
+the tunnel is the thing to optimise. If it does not, D1/D2 is still a real and sufficient
+wedge.
+
+**3. Fix F-1 before any voice startup trials the platform.**
+Private repos failing to build, reported as a generic BuildKit error, ends an evaluation on
+day one. No startup ships from a public repo.
+
+### What is genuinely strong
+
+- **Build pipeline** — `git push` → image in registry in **under 30 s**; warm rebuilds ~6 s.
+  Faster than most teams' CI, and a legitimate headline.
+- **Snapshot/resume** — verified, zero drift, same pid. Real engineering.
+- **Bundled LLM proxy** — Otto's whole reasoning path ran on it for no extra cost. For a
+  seed-stage team burning model spend, "hosting includes inference" is a sharper hook than
+  $1/agent.
+- **Arbitrary routes + wake-on-webhook** — the two things the D1 integration needs, both work.
+
+### Qualifying question for the sales motion
+
+**Ask where the prospect is on telephony before demoing.** A team with working PSTN and a
+voice vendor has a real hosting problem you can solve today. A team without one is still
+weeks from caring what their agent runs on — as this build demonstrated, at length (§3b).
+
+---
+
+## 4b. Original provisional read (written before the measurements, kept honest)
 
 **The honest positioning is "Maritime hosts the agent's brain, not its ears."** Nothing in the
 platform competes with ElevenLabs, Vapi, or Retell — and that is a feature, not a gap. Those vendors
@@ -247,10 +356,12 @@ before latency ever gets measured.
 
 ## 5. Open items
 
-- [ ] F-3 resolved → collect every §3 measurement
-- [ ] Cold-start wake latency after a real idle-sleep cycle (the headline number)
-- [ ] Confirm `/data` survives sleep/wake with a real payload (`/probe/captures`)
-- [ ] Establish what `POST /api/webhooks/{id}` delivers to a custom container
-- [ ] Test ElevenLabs post-call webhook → Maritime public URL, end to end
+- [x] F-3 resolved → every §3 measurement collected
+- [x] Cold-start wake latency — **1.85 s**, and only via the webhook endpoint
+- [x] `/data` survives sleep/wake — confirmed
+- [x] `POST /api/webhooks/{id}` returns the agent object and wakes the VM in 1.47 s
+- [ ] Confirm whether it also *delivers* the payload body to the container's `/chat`
+- [ ] Test ElevenLabs post-call webhook → Maritime public URL, end to end (blocked: no phone number, §3b)
 - [ ] Ask the team: is an Anthropic-backed LLM proxy on the roadmap (F-6)?
+- [ ] Measure websocket support (`WS /probe/ws`) — not run before the session ended
 </content>
