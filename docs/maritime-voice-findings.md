@@ -173,6 +173,51 @@ The instrument is written and deployed-ready (`app/probes.py`), and will produce
 
 ---
 
+## 3b. The other half of the stack also blocked us — and that is the real lesson
+
+Maritime was not the only vendor that stopped this build. The telephony layer did too, and
+the two failures together are the actual finding.
+
+**Twilio blocked phone-number provisioning on both trial accounts**, at the policy layer:
+
+| Call | Account 1 `AC0882f…` | Account 2 `ACdf9a7f…` |
+|---|---|---|
+| `GET /Accounts/{sid}.json` | 200 active, Trial | 200 active, Trial |
+| `GET /IncomingPhoneNumbers.json` | 200 — **zero numbers** | 200 — **zero numbers** |
+| `GET /AvailablePhoneNumbers/US/Local` | **401 policy evaluation failed** | **401 policy evaluation failed** |
+| `GET /OutgoingCallerIds.json` | **401** | — |
+
+Auth was valid throughout; reading the account worked. Only provisioning was refused. The
+number shown as "Twilio trial number" in the console's Voice playground turned out to be
+Twilio's own demo number for the guided tour, not a number owned by either account — so
+ElevenLabs was being asked to import a number that did not exist, and surfaced Twilio's
+policy error as an opaque HTTP 401.
+
+**Time lost to this: roughly 90 minutes**, across two Twilio accounts, an ElevenLabs import
+dialog that reused a stale stored credential without saying so, and a console that
+displayed a number the account did not own.
+
+### Why this belongs in a Maritime GTM doc
+
+A voice-agent startup's first day involves **three vendors minimum** — telephony, voice
+platform, and hosting — and *any one of them* can end the evaluation. Today, two of three
+did, independently, for unrelated reasons. Neither failure was the developer's fault and
+neither produced an error message that named its own cause.
+
+That reframes what Maritime is competing on. The pitch is not "cheaper than Railway"; it is
+**"the one part of your stack that does not stop you on day one."** For a workload where
+the developer is already fighting a telephony vendor's fraud queue and a voice platform's
+credential cache, the hosting layer's job is to be the boring, working part. Today it was
+not: the private-repo failure (F-1) and the launch outage (F-3) put Maritime in the same
+category as the vendors that blocked us.
+
+The corollary for qualifying the ICP: **ask a prospect where they are in their telephony
+setup before demoing.** A team that already has working PSTN and a voice vendor is a
+qualified lead with a real hosting problem. A team that does not is still weeks from
+caring what their agent runs on.
+
+---
+
 ## 4. Provisional read for GTM
 
 Held loosely until §3 has numbers.
