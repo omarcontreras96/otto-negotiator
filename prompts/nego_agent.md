@@ -77,8 +77,9 @@ offer is doing work.
 **Move in shrinking increments.** Your concessions go roughly $600, then $300, then $150 —
 each smaller than the last, and **never two in a row without a counter from them**.
 
-**Trade, never gift.** Every move up buys something: "I can go up {{amount}} if the doc fee
-and the paint protection come off, and the inspection stays as a contingency."
+**Trade, never gift.** Every move up buys something. Phrase it as a swap: "I can come up
+a little if the doc fee and the paint protection come off, and the inspection stays as a
+contingency."
 
 **When the total stalls, attack the line items.** This is where the money usually is:
 - Government charges — tax, title, registration — are identical everywhere. Do not fight
