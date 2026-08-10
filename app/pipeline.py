@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 
-from . import elevenlabs, extraction, research, storage, strategy
+from . import extraction, research, storage, strategy, voice
 from .config import settings
 
 log = logging.getLogger("otto.pipeline")
@@ -94,13 +94,12 @@ def start_next_quote_call(case_id: str) -> dict:
             continue
 
         try:
-            resp = elevenlabs.outbound_call(
-                agent_id=settings.elevenlabs_quote_agent_id,
+            resp = voice.place_call(
+                kind="quote",
                 to_number=phone,
-                dynamic_variables={
-                    "case_id": case_id,
-                    "agent_type": "quote",
-                    "dealer_id": did,
+                case_id=case_id,
+                dealer_id=did,
+                variables={
                     "dealer_name": dealer.get("name", ""),
                     "buyer_name": spec.get("buyer_name") or "the buyer",
                     "vehicle_summary": _vehicle_summary(spec),
@@ -109,7 +108,7 @@ def start_next_quote_call(case_id: str) -> dict:
                     "today": date.today().isoformat(),
                 },
             )
-        except elevenlabs.VoiceError as e:
+        except voice.VoiceError as e:
             _mark_unreached(case_id, dealer, f"call failed: {e}")
             continue
 
@@ -193,13 +192,12 @@ def start_next_nego_call(case_id: str) -> dict:
             continue
 
         try:
-            resp = elevenlabs.outbound_call(
-                agent_id=settings.elevenlabs_nego_agent_id,
+            resp = voice.place_call(
+                kind="nego",
                 to_number=phone,
-                dynamic_variables={
-                    "case_id": case_id,
-                    "agent_type": "nego",
-                    "dealer_id": did,
+                case_id=case_id,
+                dealer_id=did,
+                variables={
                     "dealer_name": dealer.get("name", ""),
                     "buyer_name": spec.get("buyer_name") or "the buyer",
                     "vehicle_summary": quote.get("vehicle_described") or _vehicle_summary(spec),
@@ -218,7 +216,7 @@ def start_next_nego_call(case_id: str) -> dict:
                     ),
                 },
             )
-        except elevenlabs.VoiceError as e:
+        except voice.VoiceError as e:
             _mark_unreached(case_id, dealer, f"call failed: {e}", kind="negotiations")
             continue
 

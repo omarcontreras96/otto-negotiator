@@ -49,7 +49,7 @@ async def health() -> dict:
 
 
 @app.post("/chat")
-async def chat(request: Request) -> dict:
+async def chat(request: Request, background: BackgroundTasks) -> dict:
     """Maritime front door. Also reachable from `maritime chat otto "..."`.
 
     Deliberately intent-matched rather than LLM-routed: this endpoint has a hard
@@ -61,6 +61,40 @@ async def chat(request: Request) -> dict:
     source = body.get("source", "unknown")
     log.info("chat source=%s message=%r", source, message[:200])
     _chatlog(body)
+
+    # Maritime's platform webhook (POST /api/webhooks/{id}) wakes a sleeping
+    # agent and delivers the original payload JSON-stringified into `message`
+    # with source="webhook" — measured, docs/maritime-voice-findings.md §3.4.
+    # That makes this the sleep-proof path for voice-vendor webhooks: Vapi
+    # posts to the platform URL, and a call report arriving here is unwrapped
+    # and dispatched exactly as if it had hit /webhooks/vapi directly.
+    if source == "webhook":
+        try:
+            inner = json.loads(message)
+        except json.JSONDecodeError:
+            inner = None
+        if isinstance(inner, dict):
+            from . import vapi
+
+            if vapi.is_end_of_call(inner):
+                meta = vapi.webhook_meta(inner)
+                case_id, agent_type, dealer_id = (
+                    meta["case_id"], meta["agent_type"], meta["dealer_id"])
+                if not case_id and meta["conversation_id"]:
+                    if idx := storage.lookup_conversation(meta["conversation_id"]):
+                        case_id = idx["case_id"]
+                        agent_type = agent_type or idx["agent"]
+                        dealer_id = dealer_id or idx.get("dealer_id", "")
+                if not case_id and agent_type in ("intake", ""):
+                    case_id = storage.new_case(user_phone=meta["caller_number"],
+                                               source="phone")
+                    agent_type = "intake"
+                if case_id:
+                    background.add_task(
+                        _handle_call, case_id, agent_type, dealer_id,
+                        meta["conversation_id"], vapi.transcript_text(inner))
+                    return {"response": f"call report received for {case_id}"}
+            return {"response": "webhook payload received"}
 
     lowered = message.lower()
     case = storage.latest_case()
@@ -191,6 +225,38 @@ async def create_case(request: Request) -> dict:
     return {"case_id": case_id, "status": (storage.read_case(case_id) or {}).get("status")}
 
 
+@app.post("/debug/call")
+async def debug_call(request: Request) -> dict:
+    """Place a single test call outside any case: {"kind": "quote", "to_number": "+1..."}.
+
+    Still subject to every demo-mode guard — a non-DEMO_TARGET number is refused
+    by the driver itself.
+    """
+    from . import voice
+
+    body = await request.json()
+    kind = body.get("kind", "quote")
+    to = body.get("to_number") or (settings.demo_target_list[0]
+                                   if settings.demo_target_list else "")
+    case_id = storage.new_case(source="debug")
+    storage.set_status(case_id, "calling_for_quotes")
+    variables = {
+        "dealer_name": "Demo Motors", "buyer_name": "Omar",
+        "vehicle_summary": "2020-2022 Honda Civic EX, under 60,000 miles",
+        "requirements": "clean title", "market": "San Francisco Bay Area",
+        "today": __import__("datetime").date.today().isoformat(),
+        **(body.get("variables") or {}),
+    }
+    try:
+        resp = voice.place_call(kind=kind, to_number=to, variables=variables,
+                                case_id=case_id, dealer_id="debug_dealer")
+    except voice.VoiceError as e:
+        raise HTTPException(400, str(e))
+    storage.index_conversation(resp.get("conversation_id", ""), case_id, kind,
+                               "debug_dealer")
+    return {"case_id": case_id, **{k: v for k, v in resp.items() if k != "raw"}}
+
+
 @app.post("/cases/{case_id}/advance")
 async def advance_case(case_id: str) -> dict:
     from . import pipeline
@@ -200,7 +266,50 @@ async def advance_case(case_id: str) -> dict:
     return pipeline.advance(case_id)
 
 
-# --- voice webhook ----------------------------------------------------------
+# --- voice webhooks ---------------------------------------------------------
+
+@app.post("/webhooks/vapi")
+async def vapi_webhook(request: Request, background: BackgroundTasks) -> dict:
+    """Vapi server webhook — end-of-call-report only; other events are ack'd.
+
+    Routing comes from the query params Otto stamped on each call's server URL
+    (?case_id=…&agent=…&dealer_id=…). The metadata echo and the call-id index
+    are fallbacks. An inbound intake call arrives with no params at all — a new
+    case is opened for it.
+    """
+    from . import vapi
+
+    payload = await request.json()
+    if not vapi.is_end_of_call(payload):
+        return {"ok": True, "ignored": (payload.get("message") or {}).get("type")}
+
+    meta = vapi.webhook_meta(payload)
+    qp = request.query_params
+    case_id = qp.get("case_id") or meta["case_id"]
+    agent_type = qp.get("agent") or meta["agent_type"]
+    dealer_id = qp.get("dealer_id") or meta["dealer_id"]
+    if not case_id and meta["conversation_id"]:
+        if idx := storage.lookup_conversation(meta["conversation_id"]):
+            case_id = idx["case_id"]
+            agent_type = agent_type or idx["agent"]
+            dealer_id = dealer_id or idx.get("dealer_id", "")
+
+    transcript = vapi.transcript_text(payload)
+    log.info("vapi webhook call=%s case=%s agent=%s dealer=%s ended=%s chars=%d",
+             meta["conversation_id"], case_id, agent_type, dealer_id,
+             meta["ended_reason"], len(transcript))
+
+    if not case_id:
+        if agent_type in ("intake", ""):
+            case_id = storage.new_case(user_phone=meta["caller_number"], source="phone")
+            agent_type = "intake"
+        else:
+            return {"ok": False, "reason": "unroutable: no case_id"}
+
+    background.add_task(_handle_call, case_id, agent_type, dealer_id,
+                        meta["conversation_id"], transcript)
+    return {"ok": True, "case_id": case_id}
+
 
 @app.post("/webhooks/elevenlabs")
 async def elevenlabs_webhook(request: Request, background: BackgroundTasks) -> dict:

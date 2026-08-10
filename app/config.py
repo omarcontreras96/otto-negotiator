@@ -33,7 +33,16 @@ class Settings:
             return maritime
         return Path.cwd() / "data"
 
-    # --- voice layer (ElevenLabs Agents) -----------------------------------
+    # --- voice layer (Vapi — primary) --------------------------------------
+    # Vapi supplies the phone number itself; no Twilio account involved.
+    vapi_api_key = os.getenv("VAPI_API_KEY", "")
+    vapi_phone_number_id = os.getenv("VAPI_PHONE_NUMBER_ID", "")
+    vapi_model_provider = os.getenv("VAPI_MODEL_PROVIDER", "openai")
+    vapi_model = os.getenv("VAPI_MODEL", "gpt-4o")
+    vapi_voice_provider = os.getenv("VAPI_VOICE_PROVIDER", "vapi")
+    vapi_voice_id = os.getenv("VAPI_VOICE_ID", "Elliot")
+
+    # --- voice layer (ElevenLabs Agents — kept as fallback) ----------------
     elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY", "")
     elevenlabs_phone_number_id = os.getenv("ELEVENLABS_PHONE_NUMBER_ID", "")
     elevenlabs_intake_agent_id = os.getenv("ELEVENLABS_INTAKE_AGENT_ID", "")
@@ -73,7 +82,18 @@ class Settings:
         return [n.strip() for n in os.getenv("DEMO_TARGETS", "").split(",") if n.strip()]
 
     @property
+    def voice_backend(self) -> str:
+        """Vapi wins when configured; ElevenLabs remains as the fallback driver."""
+        if self.vapi_api_key:
+            return "vapi"
+        if self.elevenlabs_api_key:
+            return "elevenlabs"
+        return "none"
+
+    @property
     def voice_configured(self) -> bool:
+        if self.voice_backend == "vapi":
+            return bool(self.vapi_phone_number_id)
         return bool(self.elevenlabs_api_key and self.elevenlabs_phone_number_id)
 
     @property
@@ -92,6 +112,7 @@ class Settings:
             "data_dir_writable": os.access(self.data_dir, os.W_OK)
             if self.data_dir.exists()
             else False,
+            "voice_backend": self.voice_backend,
             "voice_configured": self.voice_configured,
             "llm_backend": self.llm_backend,
             "maritime_proxy_available": bool(self.openai_base_url and self.openai_api_key),
