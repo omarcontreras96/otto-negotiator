@@ -60,6 +60,7 @@ async def chat(request: Request) -> dict:
     message = (body.get("message") or "").strip()
     source = body.get("source", "unknown")
     log.info("chat source=%s message=%r", source, message[:200])
+    _chatlog(body)
 
     lowered = message.lower()
     case = storage.latest_case()
@@ -86,6 +87,27 @@ async def chat(request: Request) -> dict:
         }
 
     return {"response": _greeting() + "\n\n" + _status_line(case)}
+
+
+def _chatlog(body: dict) -> None:
+    """Persist every /chat delivery verbatim — probe instrumentation.
+
+    Exists to answer one undocumented question: what does Maritime's
+    POST /api/webhooks/{id} actually deliver to a custom container? Read it
+    back at GET /probe/chatlog.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    try:
+        d = settings.data_dir / "probe"
+        d.mkdir(parents=True, exist_ok=True)
+        with (d / "chat_log.jsonl").open("a") as f:
+            f.write(_json.dumps({
+                "at": datetime.now(timezone.utc).isoformat(), "body": body,
+            }) + "\n")
+    except Exception:  # instrumentation must never break the front door
+        log.exception("chatlog write failed")
 
 
 def _greeting() -> str:

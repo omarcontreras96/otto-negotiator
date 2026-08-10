@@ -237,6 +237,17 @@ async def capture(request: Request) -> dict:
     return {"probe": "capture", "ok": True, "bytes": len(raw)}
 
 
+@router.get("/chatlog")
+async def chatlog() -> dict:
+    """Everything /chat received, verbatim — shows what the platform webhook
+    actually delivers to a custom container."""
+    path = settings.data_dir / "probe" / "chat_log.jsonl"
+    if not path.exists():
+        return {"count": 0, "entries": []}
+    lines = path.read_text().splitlines()[-_CAPTURE_MAX:]
+    return {"count": len(lines), "entries": [json.loads(x) for x in lines]}
+
+
 @router.get("/captures")
 async def captures() -> dict:
     """Read back what /capture recorded — including across a sleep/wake cycle,
