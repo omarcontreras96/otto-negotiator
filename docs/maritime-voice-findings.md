@@ -184,11 +184,13 @@ Three separate behaviours, and the middle one is the problem:
 
 | Behaviour | Result |
 |---|---|
-| `GET` the public URL while asleep | **HTTP 503 `"Agent is starting or asleep. Try again in a moment."`** — polled every 500 ms for **240 s** and it never woke. HTTP traffic to the public URL does **not** wake an agent. |
-| `POST /api/webhooks/{agent_id}` while asleep | **HTTP 200 in 1.47 s**, wakes it |
+| `GET` the public URL while asleep | **HTTP 503 `"Agent is starting or asleep. Try again in a moment."`** — polled every 500 ms for **240 s** and it never woke. HTTP traffic to the public URL does **not** wake an agent. **Re-confirmed a week later** (2026-08-09): 69 consecutive 503s over 150 s. |
+| `POST /api/webhooks/{agent_id}` while asleep | **HTTP 200 in 1.47 s**, wakes it (re-test a week later: 200 in 1.7 s) |
 | public URL after that webhook | serving **0.38 s** later |
 
-**Total cold wake ≈ 1.85 s**, and only via the webhook endpoint.
+**Total cold wake ≈ 1.85 s**, and only via the webhook endpoint. The platform's own log
+puts the snapshot resume itself at **1,196 ms** (`Agent woken (snapshot, 1196ms)`), so the
+resume dominates and the delivery plumbing adds ~0.5 s.
 
 ### 3.3 Snapshot/resume — confirmed, and better than documented
 
@@ -200,18 +202,49 @@ Three separate behaviours, and the middle one is the problem:
 | wall uptime | — | 613.197 s |
 | **apparent sleep** | — | **0.0 s** |
 
-The process is genuinely resumed, not restarted — in-process state survives. And wall-clock
-*and* monotonic clocks are both frozen during sleep (drift is exactly zero), so the VM is
-truly paused rather than descheduled. That is stronger than the docs' hedge about "not
-trusting cached wall-clock time," and it is a real engineering achievement worth marketing.
-
+The process is genuinely resumed, not restarted — in-process state survives.
 `/data` persisted across the cycle: the record written before sleep read back intact.
+
+**Week-long durability (added 2026-08-09).** The same agent was left asleep for **7 days**
+and woken: `boot_id` still `1638ed398b574be8` — the *same process*, resumed after a week —
+and `/data` intact byte-for-byte. Wake was as fast as after a 10-minute nap. This is the
+sleep/wake economics claim proven at its most demanding: an agent that costs ~nothing for a
+week and resumes mid-thought in ~1.2 s.
+
+**Clock correction to the earlier reading.** After the 7-day sleep, monotonic uptime =
+wall uptime = ~603,000 s (≈7 days). So guest clocks are **advanced in lockstep on resume**,
+not frozen (at short sleeps the two interpretations are indistinguishable, which is how the
+first reading went wrong). Practical consequence: `wall − monotonic` drift is always zero,
+so **a process cannot detect from inside that it slept**. Re-establish long-lived
+connections on error, never on a clock heuristic — the docs' advice is right, and now we
+know why.
 
 ### 3.4 Arbitrary routes and websockets
 
 **Arbitrary routes work.** Every path served on the public URL, GET and POST:
 `/probe/echo`, `/probe/uptime`, `/cases`, `/`, `POST /probe/echo`, `POST /chat` — all 200.
 A voice vendor's webhook can point straight at a Maritime agent. No shim needed.
+
+**Webhook delivery contract (established 2026-08-09).** What `POST /api/webhooks/{id}`
+actually hands the container: the entire original body, JSON-serialised as a string, inside
+a `/chat` call —
+
+```json
+{"message": "{\"message\": \"...\", \"custom_field\": \"does-this-arrive\"}",
+ "source": "webhook", "webhook": true}
+```
+
+Custom fields survive intact. A custom container needs ~5 lines of routing
+(`if source == "webhook": json.loads(message)`) and an ElevenLabs/Vapi post-call webhook
+reaches a **sleeping** agent with no shim service. Combined with 3.2 this yields the one
+integration rule that must be in the docs: **webhooks → `api.maritime.sh/api/webhooks/{id}`;
+the public app URL 503s while asleep and never wakes.**
+
+**WebSockets: blocked at the edge (added 2026-08-09).** A `wss://` upgrade against the
+public URL is rejected **HTTP 403** before reaching the container, whose WS endpoint works
+fine locally. Media termination (D4) is therefore confirmed impossible — no Twilio Media
+Streams, no WebSocket custom-LLM transport. SSE over plain HTTP streams fine, so the
+HTTP-streaming variant of D3 is unaffected.
 
 Public URL format: `https://api.maritime.sh/a/{agent-uuid}`.
 
@@ -232,7 +265,7 @@ is the floor for a custom-LLM integration: ~390 ms before the model has done any
 | **D1 Orchestrator** | seconds | 291 ms warm · 1.85 s cold via webhook | ✅ **Yes.** Arbitrary routes work, webhooks wake reliably, `/data` persists. This is a clean fit. |
 | **D2 Mid-call tool** | <500 ms invisible, ~1 s tolerable | 291 ms warm (p90 381) · **1.85 s if asleep** | ⚠️ **Only with sleep disabled.** Warm is tolerable; a cold start is 1.85 s of silence mid-sentence. Requires `--idle 0`. |
 | **D3 Custom LLM** | <500 ms to first token | **390 ms transport alone**, before the model | ❌ **No.** The tunnel overhead consumes the entire first-token budget. |
-| **D4 Media** | ~20 ms/frame | not attempted | ❌ Not Maritime's job, and shouldn't be. |
+| **D4 Media** | ~20 ms/frame | **WS upgrade rejected, HTTP 403 at the edge** | ❌ **Confirmed impossible** — and shouldn't be Maritime's job anyway. |
 
 ---
 
@@ -360,8 +393,14 @@ before latency ever gets measured.
 - [x] Cold-start wake latency — **1.85 s**, and only via the webhook endpoint
 - [x] `/data` survives sleep/wake — confirmed
 - [x] `POST /api/webhooks/{id}` returns the agent object and wakes the VM in 1.47 s
-- [ ] Confirm whether it also *delivers* the payload body to the container's `/chat`
-- [ ] Test ElevenLabs post-call webhook → Maritime public URL, end to end (blocked: no phone number, §3b)
+- [x] Payload delivery confirmed (2026-08-09): full body arrives at `/chat`, stringified in
+      `message`, with `source: "webhook"` — contract in §3.4
+- [x] Websockets measured (2026-08-09): **403 at the edge** — §3.4, D4 impossible
+- [x] Week-long sleep survival (2026-08-09): same process resumed after 7 days, `/data`
+      intact — §3.3
+- [ ] Test ElevenLabs post-call webhook → Maritime webhook URL, end to end (blocked: no
+      phone number, §3b — Twilio policy hold on both trial accounts)
 - [ ] Ask the team: is an Anthropic-backed LLM proxy on the roadmap (F-6)?
-- [ ] Measure websocket support (`WS /probe/ws`) — not run before the session ended
+- [ ] Ask the team: is public-URL wake-on-request intended behaviour or a gap? The docs'
+      "wake on the next message" reads as if it should wake (§3.2)
 </content>
