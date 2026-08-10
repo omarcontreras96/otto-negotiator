@@ -257,6 +257,55 @@ async def debug_call(request: Request) -> dict:
     return {"case_id": case_id, **{k: v for k, v in resp.items() if k != "raw"}}
 
 
+@app.post("/debug/reconcile")
+async def reconcile(background: BackgroundTasks) -> dict:
+    """Pull ended calls from Vapi's API and process any the webhooks missed.
+
+    Idempotent: the per-call marker plus the handlers' own already-recorded
+    checks make re-runs safe. This is the belt to the webhook's braces — a
+    lost webhook (dead tunnel, sleeping agent) costs a poll, not a call.
+    """
+    from . import vapi
+
+    processed_path = settings.data_dir / "index" / "processed_calls.json"
+    processed = set()
+    if processed_path.exists():
+        processed = set(json.loads(processed_path.read_text()))
+
+    picked, skipped = [], 0
+    for call in vapi.list_recent_calls():
+        if call.get("status") != "ended":
+            continue
+        rep = vapi.call_to_report(call)
+        cid = rep["conversation_id"]
+        if cid in processed:
+            skipped += 1
+            continue
+        if not rep["transcript"].strip():
+            processed.add(cid)  # failed dial etc. — nothing to process, don't revisit
+            continue
+
+        case_id, agent_type, dealer_id = rep["case_id"], rep["agent_type"], rep["dealer_id"]
+        if not case_id:
+            if idx := storage.lookup_conversation(cid):
+                case_id = idx["case_id"]
+                agent_type = agent_type or idx["agent"]
+                dealer_id = dealer_id or idx.get("dealer_id", "")
+        if not case_id and agent_type == "intake":
+            case_id = storage.new_case(user_phone=rep["caller_number"], source="phone")
+        if not case_id:
+            continue  # unroutable; leave for a human to look at
+
+        processed.add(cid)
+        picked.append({"call": cid[:8], "case": case_id, "agent": agent_type})
+        background.add_task(_handle_call, case_id, agent_type, dealer_id,
+                            cid, rep["transcript"])
+
+    processed_path.parent.mkdir(parents=True, exist_ok=True)
+    processed_path.write_text(json.dumps(sorted(processed)))
+    return {"processed": picked, "already_done": skipped}
+
+
 @app.post("/cases/{case_id}/advance")
 async def advance_case(case_id: str) -> dict:
     from . import pipeline

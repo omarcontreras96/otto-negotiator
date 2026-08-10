@@ -137,6 +137,38 @@ def outbound_call(*, kind: str, to_number: str, variables: dict[str, str],
     return {"conversation_id": call_id, "raw": data}
 
 
+# --- API-side call retrieval (reconciliation) --------------------------------
+
+def list_recent_calls(limit: int = 20) -> list[dict]:
+    """Recent calls straight from Vapi's API — the pull side of reconciliation."""
+    r = httpx.get(f"{API_BASE}/call", headers=_headers(),
+                  params={"limit": limit}, timeout=25)
+    r.raise_for_status()
+    return r.json()
+
+
+def call_to_report(call: dict) -> dict:
+    """Normalise an API call object to the same shape webhook_meta produces.
+
+    Webhooks push `message.call` / `message.artifact`; the API returns the call
+    with `artifact` inline. Reconciliation exists because a webhook can be lost
+    (a free quick-tunnel died mid-demo and swallowed one on 2026-08-09) — the
+    API copy is authoritative and always there.
+    """
+    meta = call.get("metadata") or {}
+    inbound = call.get("type") == "inboundPhoneCall"
+    return {
+        "conversation_id": call.get("id", ""),
+        "case_id": meta.get("case_id", ""),
+        "agent_type": meta.get("agent_type", "") or ("intake" if inbound else ""),
+        "dealer_id": meta.get("dealer_id", ""),
+        "caller_number": (call.get("customer") or {}).get("number", ""),
+        "ended_reason": call.get("endedReason", ""),
+        "status": call.get("status", ""),
+        "transcript": transcript_text({"message": {"artifact": call.get("artifact") or {}}}),
+    }
+
+
 # --- webhook parsing ---------------------------------------------------------
 
 def is_end_of_call(payload: dict) -> bool:
