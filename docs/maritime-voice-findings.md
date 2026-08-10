@@ -71,7 +71,7 @@ It never retried the build from the repo. Recovering required the explicit form:
 **Impact:** medium. The natural retry after any first-deploy failure is a dead end, and the error
 points at a registry problem rather than at the original build failure.
 
-### F-3 · Micro-VM launch failed platform-wide for ~5 hours: `fc-manager 500 for /vms` 🔴 **RESOLVED**
+### F-3 · Micro-VM launch fails platform-wide: `fc-manager 500 for /vms` 🔴 **RECURRING**
 
 Observed 2026-08-02, ~14:47 PDT until ~19:50 PDT — roughly five hours during which no agent
 could start. Recovered without action on our side; the same deploy command then succeeded. The Docker build succeeds **completely** — image built,
@@ -156,6 +156,16 @@ For comparison, that is faster than most teams' CI. If F-3 is transient, the dev
 a strength worth marketing.
 
 ---
+
+### F-3 recurrence (2026-08-09)
+
+One week later, the identical failure returned: clean build, registry push OK, then
+`fc-manager 500 for /vms: Internal Server Error` on VM launch. Retry and plain
+`maritime start` both failed. An **already-running agent kept working all week** (sleeping,
+waking via webhook) — the failure is confined to *launching* VMs, so running fleets survive
+but nothing new can ship. For the GTM read this changes F-3 from "they had a bad day" to
+"launch reliability is a recurring platform risk": a voice startup that hits this twice in
+two sessions does not come back for a third.
 
 ## 3. Latency measurements — COLLECTED
 
